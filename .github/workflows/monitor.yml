@@ -1,0 +1,43 @@
+name: Bol Monitor
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # elke 15 min
+  workflow_dispatch:        # handmatig starten via Actions-tab
+
+permissions:
+  contents: write           # nodig om state.json te committen
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright (Chromium + deps)
+        run: npx playwright install --with-deps chromium
+
+      - name: Run monitor once
+        run: npm run check
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          CHECK_INTERVAL_MINUTES: 30
+          CHECK_JITTER_SECONDS: 10
+          TIMEOUT_MS: 20000
+
+      - name: Commit state changes
+        run: |
+          if [[ `git status --porcelain` ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "chore: update state [skip ci]"
+            git push
+          fi
