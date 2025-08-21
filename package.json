@@ -1,10 +1,10 @@
 {
   "name": "bol-monitor",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
+    "check": "node src/run-once.js",
     "postinstall": "npx playwright install --with-deps chromium"
   },
   "dependencies": {
