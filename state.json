@@ -3,5 +3,30 @@
     "status": "UNKNOWN",
     "price": null,
     "ts": 1755820596700
+  },
+  "test-ps5": {
+    "status": "UNKNOWN",
+    "price": null,
+    "ts": 1755821200264
+  },
+  "test-airpods": {
+    "status": "UNKNOWN",
+    "price": null,
+    "ts": 1755821200635
+  },
+  "test-lego": {
+    "status": "UNKNOWN",
+    "price": null,
+    "ts": 1755821200869
+  },
+  "test-philips-hue": {
+    "status": "UNKNOWN",
+    "price": null,
+    "ts": 1755821201148
+  },
+  "test-toy": {
+    "status": "UNKNOWN",
+    "price": null,
+    "ts": 1755821201472
   }
 }
