@@ -24,6 +24,15 @@ jobs:
       - name: Install Playwright (Chromium + deps)
         run: npx playwright install --with-deps chromium
 
+      - name: Test Discord webhook (ping)
+        run: |
+          curl -s -o /dev/null -w "%{http_code}\n" \
+            -H "Content-Type: application/json" \
+            -d '{"content":"✅ GitHub Actions kan posten naar Discord (ping)"}' \
+            "$DISCORD_WEBHOOK_URL"
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
       - name: Run monitor once
         run: npm run check
         env:
