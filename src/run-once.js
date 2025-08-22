@@ -13,6 +13,7 @@ async function main() {
     logger.info({ id: item.id }, 'Checking item');
 
     const res = await checkBolProduct({ url: item.url });
+    logger.info({ id: item.id, status: res.status, price: res.price, title: res.title }, 'Result');
     const prev = state[item.id] || { status: 'UNKNOWN', price: null };
     state[item.id] = { status: res.status, price: res.price, ts: Date.now() };
 
