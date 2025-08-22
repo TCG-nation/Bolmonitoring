@@ -7,7 +7,7 @@
   "test-ps5": {
     "status": "UNKNOWN",
     "price": null,
-    "ts": 1755823656515
+    "ts": 1755824275561
   },
   "test-airpods": {
     "status": "UNKNOWN",
@@ -28,5 +28,25 @@
     "status": "UNKNOWN",
     "price": null,
     "ts": 1755823673994
+  },
+  "test-airpods3": {
+    "status": "UNKNOWN",
+    "price": null,
+    "ts": 1755824280065
+  },
+  "test-lego-10698": {
+    "status": "UNKNOWN",
+    "price": null,
+    "ts": 1755824284411
+  },
+  "test-hue-starterkit": {
+    "status": "UNKNOWN",
+    "price": null,
+    "ts": 1755824288791
+  },
+  "test-monopoly": {
+    "status": "UNKNOWN",
+    "price": null,
+    "ts": 1755824293199
   }
 }
