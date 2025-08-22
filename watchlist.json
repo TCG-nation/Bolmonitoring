@@ -1,9 +1,41 @@
 [
   {
-    "id": "voorbeeld-1",
-    "label": "Voorbeeld product",
-    "ean": null,
-    "url": "https://www.bol.com/nl/nl/p/voorbeeld/1234567890/", 
+    "id": "test-ps5",
+    "label": "PlayStation 5 Console",
+    "ean": "0711719395209",
+    "url": "https://www.bol.com/nl/nl/p/playstation-5-console/9300000068344460/",
+    "targetPrice": null,
+    "intervalMinutes": 30
+  },
+  {
+    "id": "test-airpods",
+    "label": "Apple AirPods (3e generatie)",
+    "ean": "0194252568926",
+    "url": "https://www.bol.com/nl/nl/p/apple-airpods-3-met-magsafe-oplaadcase/9300000107222280/",
+    "targetPrice": null,
+    "intervalMinutes": 30
+  },
+  {
+    "id": "test-lego",
+    "label": "LEGO Classic 10698 Creatieve Opbergdoos",
+    "ean": "5702015357197",
+    "url": "https://www.bol.com/nl/nl/p/lego-classic-creatieve-opbergdoos-10698/9200000046750670/",
+    "targetPrice": null,
+    "intervalMinutes": 30
+  },
+  {
+    "id": "test-philips-hue",
+    "label": "Philips Hue White & Color Ambiance Starterkit E27",
+    "ean": "8719514291130",
+    "url": "https://www.bol.com/nl/nl/p/philips-hue-white-and-color-ambiance-starterkit-e27-3x-rgb-wit/9200000084214526/",
+    "targetPrice": null,
+    "intervalMinutes": 30
+  },
+  {
+    "id": "test-toy",
+    "label": "Hasbro Monopoly Classic",
+    "ean": "5010993414731",
+    "url": "https://www.bol.com/nl/nl/p/monopoly-classic-bordspel/9200000010843133/",
     "targetPrice": null,
     "intervalMinutes": 30
   }
