@@ -1,0 +1,57 @@
+name: DIAG (Self-Hosted)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: self-hosted
+
+    steps:
+      - name: Echo runner info
+        shell: cmd
+        run: |
+          ver
+          echo OS=%OS%
+          echo PROCESSOR_ARCHITECTURE=%PROCESSOR_ARCHITECTURE%
+          echo USERPROFILE=%USERPROFILE%
+
+      - name: Check Git & Node in PATH
+        shell: cmd
+        run: |
+          git --version
+          node -v
+          npm -v
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Ensure artifacts folder
+        shell: cmd
+        run: if not exist artifacts mkdir artifacts
+
+      - name: Test Discord webhook (no-fail)
+        continue-on-error: true
+        shell: cmd
+        run: |
+          echo Pinging Discord...
+          curl -s -o NUL -w "HTTP %{http_code}\n" ^
+            -H "Content-Type: application/json" ^
+            -d "{\"content\":\"🧪 DIAG ping vanaf self-hosted runner\"}" ^
+            "%DISCORD_WEBHOOK_URL%"
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+      - name: Node hello
+        run: node -e "console.log('Hello from Node ✅')"
+
+      - name: Upload artifacts (empty ok)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-artifacts
+          path: artifacts/**
+          if-no-files-found: ignore
