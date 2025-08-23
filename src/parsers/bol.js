@@ -17,7 +17,6 @@ export async function checkBolProduct({ url }) {
     ]
   });
 
-  // Context met NL headers en userAgent
   const context = await browser.newContext({
     userAgent:
       cfg.userAgent ||
@@ -27,11 +26,11 @@ export async function checkBolProduct({ url }) {
     viewport: { width: 1366, height: 900 },
     extraHTTPHeaders: {
       'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8',
-      Referer: 'https://www.google.com/'
+      'Referer': 'https://www.google.com/'
     }
   });
 
-  // verberg webdriver flag een beetje
+  // verberg webdriver flag iets
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => false });
   });
@@ -40,42 +39,56 @@ export async function checkBolProduct({ url }) {
   page.setDefaultTimeout(cfg.timeoutMs);
 
   async function acceptConsent(p) {
-    const selectors = [
+    // 1) OneTrust (meest gebruikt)
+    const candidates = [
+      '#onetrust-accept-btn-handler',
+      'button#onetrust-accept-btn-handler',
+      'button[aria-label*="Alles accepteren"]',
+      'text=/Alles accepteren/i',
       'text=/Akkoord/i',
       'text=/Accepteren/i',
-      'text=/Alles accepteren/i',
       'text=/Ik ga akkoord/i'
     ];
-    for (const sel of selectors) {
-      const btn = await p.$(sel);
-      if (btn) {
+
+    // direct op page
+    for (const sel of candidates) {
+      try {
+        const b = await p.$(sel);
+        if (b) { await b.click({ timeout: 800 }); }
+      } catch {}
+    }
+    // ook in iframes
+    for (const f of p.frames()) {
+      for (const sel of candidates) {
         try {
-          await btn.click({ timeout: 500 });
+          const b = await f.$(sel);
+          if (b) { await b.click({ timeout: 800 }); }
         } catch {}
       }
     }
-    // iframe varianten
-    for (const frame of p.frames()) {
-      for (const sel of selectors) {
-        try {
-          const b = await frame.$(sel);
-          if (b) {
-            await b.click({ timeout: 500 });
-          }
-        } catch {}
+
+    // 2) Land/taal keuze modals (best‑effort)
+    const closeCandidates = [
+      'button[aria-label*="sluiten"]',
+      'button[aria-label*="close"]',
+      '[data-test="modal-close"]',
+      'button[title*="Sluiten"]'
+    ];
+    for (const sel of closeCandidates) {
+      try { const b = await p.$(sel); if (b) await b.click({ timeout: 500 }); } catch {}
+      for (const f of p.frames()) {
+        try { const b = await f.$(sel); if (b) await b.click({ timeout: 500 }); } catch {}
       }
     }
   }
 
   async function extractInfo(p) {
-    // JSON-LD lezen
-    const jsonLdRaw = await p.$$eval('script[type="application/ld+json"]', nodes =>
-      nodes.map(n => n.textContent).filter(Boolean)
-    );
-    let availability = null,
-      price = null,
-      title = null;
+    let availability = null, price = null, title = null;
 
+    // 1) JSON-LD
+    const jsonLdRaw = await p.$$eval('script[type="application/ld+json"]', ns =>
+      ns.map(n => n.textContent).filter(Boolean)
+    );
     for (const raw of jsonLdRaw) {
       try {
         const data = JSON.parse(raw);
@@ -85,26 +98,84 @@ export async function checkBolProduct({ url }) {
             title = b.name || title;
             const offer = b.offers || b.aggregateOffer || null;
             if (offer) {
-              availability =
+              availability = availability ||
                 offer.availability ||
                 (offer.offers && offer.offers[0]?.availability) ||
-                availability;
-              const p = offer.price || offer.lowPrice || offer.highPrice || null;
-              price = p ? Number(String(p).replace(',', '.')) : price;
+                null;
+              const pVal = offer.price ?? offer.lowPrice ?? offer.highPrice ?? null;
+              if (pVal != null) {
+                const num = Number(String(pVal).replace(',', '.'));
+                if (!Number.isNaN(num)) price = price ?? num;
+              }
             }
           }
         }
       } catch {}
     }
 
+    // 2) window.__NEXT_DATA__ of andere JSON-blokken
+    async function readJson(selector) {
+      try {
+        const txt = await p.$eval(selector, el => el.textContent);
+        return txt ? JSON.parse(txt) : null;
+      } catch { return null; }
+    }
+    let nextData = await readJson('#__NEXT_DATA__');
+
+    if (!nextData) {
+      // kies grootste JSON-achtige <script>-inhoud (heuristiek)
+      const bigScripts = await p.$$eval('script:not([type]),script[type="application/json"]', ns =>
+        ns.map(n => n.textContent || '')
+          .filter(t => t.trim().startsWith('{') && t.length > 1500)
+          .sort((a,b)=>b.length-a.length)
+          .slice(0,3)
+      );
+      for (const s of bigScripts) {
+        try { const j = JSON.parse(s); if (j) { nextData = j; break; } } catch {}
+      }
+    }
+
+    function deepFind(obj) {
+      const out = {};
+      const stack = [obj];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (cur && typeof cur === 'object') {
+          for (const [k, v] of Object.entries(cur)) {
+            const lk = k.toLowerCase();
+            if (['availability','instock','in_stock','available','availabilitystate','stockstate'].some(s => lk.includes(s))) {
+              out.avail = out.avail ?? (typeof v === 'string' ? v : (v?.toString?.() ?? null));
+            }
+            if (['price','sellingprice','amount','value','currentprice'].some(s => lk.includes(s))) {
+              const num = Number(String(v).replace(',', '.'));
+              if (!Number.isNaN(num)) out.price = out.price ?? num;
+            }
+            if (['title','name','productname'].some(s => lk.includes(s))) {
+              if (!out.title && typeof v === 'string') out.title = v;
+            }
+            if (v && typeof v === 'object') stack.push(v);
+          }
+        }
+      }
+      return out;
+    }
+
+    if (nextData) {
+      const f = deepFind(nextData);
+      availability = availability || f.avail || null;
+      price = price ?? f.price ?? null;
+      title = title || f.title || null;
+    }
+
     if (!title) title = await p.title();
 
-    // DOM fallback
+    // 3) DOM fallback (knoppen/teksten)
     const hasBuyBtn = await p.$('text=/in winkelwagen/i');
     const hasOut = await p.$('text=/tijdelijk uitverkocht|niet op voorraad/i');
 
     let status = 'UNKNOWN';
     if (availability && /InStock$/i.test(availability)) status = 'IN_STOCK';
+    else if (typeof availability === 'string' && /outofstock|niet/i.test(availability)) status = 'OUT_OF_STOCK';
     else if (hasBuyBtn) status = 'IN_STOCK';
     else if (hasOut) status = 'OUT_OF_STOCK';
 
@@ -112,29 +183,36 @@ export async function checkBolProduct({ url }) {
   }
 
   try {
-    await page.goto(url, { waitUntil: 'load' });
-    await page.waitForTimeout(1000);
+    // 1e poging
+    await page.goto(url, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(1200);
     await acceptConsent(page);
 
-    // als nog steeds geen product-url, probeer opnieuw
-    if (!page.url().includes('/p/')) {
-      await page.goto(url, { waitUntil: 'load' });
-      await page.waitForTimeout(500);
+    // Als we niet op een product zitten, probeer 2 extra pogingen
+    let attempts = 0;
+    while (!page.url().includes('/p/') && attempts < 2) {
+      attempts++;
+      await page.goto(url, { waitUntil: 'networkidle' });
+      await page.waitForTimeout(800);
       await acceptConsent(page);
     }
 
+    // Debug assets (als je artifacts-step hebt in je workflow)
     try {
-      await page.waitForSelector('script[type="application/ld+json"]', {
-        timeout: 3000
-      });
+      const fs = await import('node:fs');
+      fs.mkdirSync('artifacts', { recursive: true });
+      const safeId = (url.match(/\/([0-9]{10,})\/?/)?.[1] || Date.now()).toString();
+      await page.screenshot({ path: `artifacts/${safeId}.png`, fullPage: true }).catch(()=>{});
+      const html = await page.content();
+      fs.writeFileSync(`artifacts/${safeId}.html`, html);
     } catch {}
 
     const { status, price, title } = await extractInfo(page);
-    logger.info({ url: page.url(), status, price, title }, 'Parsed bol product');
+    logger.info({ visited: page.url(), status, price, title }, 'Parsed bol product');
 
     return { status, price, url, title };
   } catch (e) {
-    logger.warn({ err: e, finalUrl: page.url?.() }, 'Bol check failed');
+    logger.warn({ err: e?.message, finalUrl: page.url?.() }, 'Bol check failed');
     return { status: 'UNKNOWN', price: null, url, title: null };
   } finally {
     await page.close();
