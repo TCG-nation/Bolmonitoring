@@ -1,52 +1,180 @@
-name: Bol Monitor
+import { chromium } from 'playwright';
+import { cfg } from '../config.js';
+import { logger } from '../logger.js';
 
-on:
-  schedule:
-    - cron: "*/15 * * * *"   # elke 15 min
-  workflow_dispatch:        # handmatig starten via Actions-tab
+/**
+ * @returns {Promise<{status: 'IN_STOCK'|'OUT_OF_STOCK'|'UNKNOWN', price: number|null, url: string|null, title: string|null}>}
+ */
+export async function checkBolProduct({ url }) {
+  if (!url) return { status: 'UNKNOWN', price: null, url: null, title: null };
 
-permissions:
-  contents: write           # nodig om state.json te committen
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled'
+    ]
+  });
 
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  const context = await browser.newContext({
+    userAgent:
+      cfg.userAgent ||
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+    locale: 'nl-NL',
+    timezoneId: 'Europe/Amsterdam',
+    viewport: { width: 1366, height: 900 },
+    extraHTTPHeaders: {
+      'Accept-Language': 'nl-NL,nl;q=0.9,en;q=0.8',
+      'Referer': 'https://www.google.com/',
+      'sec-ch-ua': '"Chromium";v="124", "Not-A.Brand";v="24"',
+      'sec-ch-ua-platform': '"Windows"',
+      'sec-ch-ua-mobile': '?0'
+    }
+  });
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+  // verberg webdriver flag iets
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+  });
 
-      - name: Install dependencies
-        run: npm install
+  const page = await context.newPage();
+  page.setDefaultTimeout(Math.max(cfg.timeoutMs, 30000));
 
-      - name: Install Playwright (Chromium + deps)
-        run: npx playwright install --with-deps chromium
+  async function acceptEverything(p){
+    const ids = ['#onetrust-accept-btn-handler','#onetrust-accept-btn-handler button'];
+    for (const sel of ids){
+      try { const b = await p.$(sel); if (b) { await b.click({timeout: 800}); } } catch {}
+    }
+    const texts = ['Alles accepteren','Akkoord','Accepteren','Ik ga akkoord'];
+    for (const t of texts){
+      try { await p.getByText(new RegExp(t,'i')).click({timeout: 800}); } catch {}
+    }
+    for (const f of p.frames()){
+      for (const sel of ids){
+        try { const b = await f.$(sel); if (b) { await b.click({timeout:800}); } } catch {}
+      }
+      for (const t of texts){
+        try { await f.getByText(new RegExp(t,'i')).click({timeout:800}); } catch {}
+      }
+    }
+  }
 
-      - name: Test Discord webhook (ping)
-        run: |
-          curl -s -o /dev/null -w "%{http_code}\n" \
-            -H "Content-Type: application/json" \
-            -d '{"content":"✅ GitHub Actions kan posten naar Discord (ping)"}' \
-            "$DISCORD_WEBHOOK_URL"
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+  async function extract(p){
+    let availability = null, price = null, title = null;
 
-      - name: Run monitor once
-        run: npm run check
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          CHECK_INTERVAL_MINUTES: 30
-          CHECK_JITTER_SECONDS: 10
-          TIMEOUT_MS: 20000
+    // JSON-LD
+    const jsonLd = await p.$$eval('script[type="application/ld+json"]', ns => ns.map(n=>n.textContent).filter(Boolean));
+    for (const raw of jsonLd){
+      try{
+        const data = JSON.parse(raw), arr = Array.isArray(data)?data:[data];
+        for (const b of arr){
+          if (b['@type'] === 'Product'){
+            title = b.name || title;
+            const offer = b.offers || b.aggregateOffer || null;
+            if (offer){
+              availability = availability || offer.availability || (offer.offers && offer.offers[0]?.availability) || null;
+              const pval = offer.price ?? offer.lowPrice ?? offer.highPrice;
+              if (pval != null){
+                const num = Number(String(pval).replace(',','.'));
+                if (!Number.isNaN(num)) price = price ?? num;
+              }
+            }
+          }
+        }
+      } catch {}
+    }
 
-      - name: Commit state changes
-        run: |
-          if [[ `git status --porcelain` ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add state.json
-            git commit -m "chore: update state [skip ci]"
-            git push
-          fi
+    // Next/React JSON
+    async function readJson(sel){ try { const t = await p.$eval(sel, el => el.textContent); return t?JSON.parse(t):null; } catch { return null; } }
+    let nextData = await readJson('#__NEXT_DATA__');
+    if (!nextData){
+      const big = await p.$$eval('script:not([type]),script[type="application/json"]', ns =>
+        ns.map(n=>n.textContent||'').filter(t=>t.trim().startsWith('{') && t.length>2000).sort((a,b)=>b.length-a.length).slice(0,2)
+      );
+      for (const s of big){ try { const j = JSON.parse(s); if (j) { nextData = j; break; } } catch {} }
+    }
+    function deepFind(obj){
+      const out={}; const st=[obj];
+      while(st.length){
+        const cur=st.pop();
+        if (cur && typeof cur==='object'){
+          for (const [k,v] of Object.entries(cur)){
+            const lk=k.toLowerCase();
+            if (['availability','instock','in_stock','available','availabilitystate','stockstate'].some(s=>lk.includes(s))){
+              out.avail = out.avail ?? (typeof v==='string'?v:(v?.toString?.()??null));
+            }
+            if (['price','sellingprice','amount','value','currentprice'].some(s=>lk.includes(s))){
+              const num=Number(String(v).replace(',','.')); if(!Number.isNaN(num)) out.price = out.price ?? num;
+            }
+            if (['title','name','productname'].some(s=>lk.includes(s))){
+              if(!out.title && typeof v==='string') out.title = v;
+            }
+            if (v && typeof v==='object') st.push(v);
+          }
+        }
+      }
+      return out;
+    }
+    if (nextData){
+      const f = deepFind(nextData);
+      availability = availability || f.avail || null;
+      price = price ?? f.price ?? null;
+      title = title || f.title || null;
+    }
+
+    if (!title) title = await p.title();
+
+    // DOM fallback
+    const hasBuy = await p.$('text=/in winkelwagen/i');
+    const hasOut = await p.$('text=/tijdelijk uitverkocht|niet op voorraad/i');
+
+    let status='UNKNOWN';
+    if (availability && /InStock$/i.test(availability)) status='IN_STOCK';
+    else if (typeof availability==='string' && /outofstock|niet/i.test(availability)) status='OUT_OF_STOCK';
+    else if (hasBuy) status='IN_STOCK';
+    else if (hasOut) status='OUT_OF_STOCK';
+
+    return { status, price, title };
+  }
+
+  try {
+    await page.goto(url, { waitUntil: 'networkidle' });
+    await page.waitForTimeout(1200);
+    await acceptEverything(page);
+
+    let tries = 0;
+    while (!page.url().includes('/p/') && tries < 2){
+      tries++;
+      await page.goto(url, { waitUntil: 'networkidle' });
+      await page.waitForTimeout(800);
+      await acceptEverything(page);
+    }
+
+    await page.mouse.wheel(0, 800);
+    await page.waitForTimeout(400);
+    await page.mouse.wheel(0, 800);
+
+    // debug assets (indien artifact stap aanwezig)
+    try {
+      const fs = await import('node:fs');
+      fs.mkdirSync('artifacts', { recursive: true });
+      const safeId = (url.match(/\/([0-9]{10,})\/?/)?.[1] || Date.now()).toString();
+      await page.screenshot({ path: `artifacts/${safeId}.png`, fullPage: true }).catch(()=>{});
+      const html = await page.content();
+      fs.writeFileSync(`artifacts/${safeId}.html`, html);
+    } catch {}
+
+    const out = await extract(page);
+    logger.info({ visited: page.url(), ...out }, 'Parsed bol product');
+
+    return { status: out.status, price: out.price, url, title: out.title };
+  } catch (e) {
+    logger.warn({ err: e?.message, finalUrl: page.url?.() }, 'Bol check failed');
+    return { status: 'UNKNOWN', price: null, url, title: null };
+  } finally {
+    await page.close();
+    await context.close();
+    await browser.close();
+  }
+}
