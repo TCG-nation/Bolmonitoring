@@ -2,19 +2,22 @@ name: Bol Monitor
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # elke 15 min
-  workflow_dispatch:        # handmatig starten via Actions-tab
+    - cron: "*/15 * * * *"   # elke 15 minuten
+  workflow_dispatch:          # handmatig starten via Actions-tab
 
 permissions:
-  contents: write           # nodig om state.json te committen
+  contents: write             # nodig om state.json te committen
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
 
@@ -24,6 +27,7 @@ jobs:
       - name: Install Playwright (Chromium + deps)
         run: npx playwright install --with-deps chromium
 
+      # Snelle sanity check of de Discord-webhook werkt
       - name: Test Discord webhook (ping)
         run: |
           curl -s -o /dev/null -w "%{http_code}\n" \
@@ -33,6 +37,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
+      # Draai je monitor één keer (run-once), leest watchlist.json
       - name: Run monitor once
         run: npm run check
         env:
@@ -41,6 +46,7 @@ jobs:
           CHECK_JITTER_SECONDS: 10
           TIMEOUT_MS: 20000
 
+      # Bewaar status voor volgende runs (alleen als gewijzigd)
       - name: Commit state changes
         run: |
           if [[ `git status --porcelain` ]]; then
@@ -50,3 +56,11 @@ jobs:
             git commit -m "chore: update state [skip ci]"
             git push
           fi
+
+      # Downloadbare debug: HTML + screenshots van bezochte productpagina's
+      - name: Upload debug artifacts (html + screenshots)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bol-debug
+          path: artifacts/**
