@@ -8,7 +8,7 @@
     "status": "UNKNOWN",
     "price": null,
     "stockHint": null,
-    "ts": 1755948594758
+    "ts": 1755949168496
   },
   "test-airpods": {
     "status": "UNKNOWN",
@@ -34,24 +34,24 @@
     "status": "UNKNOWN",
     "price": null,
     "stockHint": null,
-    "ts": 1755948603433
+    "ts": 1755949177216
   },
   "test-lego-10698": {
     "status": "UNKNOWN",
     "price": null,
     "stockHint": null,
-    "ts": 1755948612215
+    "ts": 1755949185796
   },
   "test-hue-starterkit": {
     "status": "UNKNOWN",
     "price": null,
     "stockHint": null,
-    "ts": 1755948620865
+    "ts": 1755949194495
   },
   "test-monopoly": {
     "status": "UNKNOWN",
     "price": null,
     "stockHint": null,
-    "ts": 1755948629681
+    "ts": 1755949203082
   }
 }
