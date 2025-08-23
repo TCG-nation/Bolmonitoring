@@ -28,15 +28,15 @@ jobs:
         run: npx playwright install chromium
 
       # Snelle sanity check of de Discord-webhook
-      - name: Test Discord webhook (ping)
-        run: |
-          curl -s -o /dev/null -w "%{http_code}\n" ^
-            -H "Content-Type: application/json" ^
-            -d "{\"content\":\"✅ Self-hosted runner kan posten naar Discord (ping)\"}" ^
-            "%DISCORD_WEBHOOK_URL%"
-        shell: cmd
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+     - name: Test Discord webhook (ping)
+  shell: pwsh
+  run: |
+    $body = @{ content = "✅ Self-hosted runner kan posten naar Discord (ping)" } | ConvertTo-Json
+    Invoke-RestMethod -Method Post -ContentType 'application/json' -Body $body -Uri $env:DISCORD_WEBHOOK_URL
+    Write-Host "Ping sent"
+  env:
+    DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
 
       # Draai je monitor één keer (leest watchlist.json)
       - name: Run monitor once
