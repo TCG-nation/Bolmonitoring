@@ -184,8 +184,10 @@ export async function checkBolProduct({ url }) {
       fs.writeFileSync(`artifacts/${safeId}.html`, html);
     } catch {}
 
-    const out = await extract(page);
-    logger.info({ visited: page.url(), ...out }, 'Parsed bol product');
+  const out = await extract(page);
+logger.info({ visited: page.url(), ...out }, 'Parsed bol product');
+return { status: out.status, price: out.price, url, title: out.title, stockHint: out.stockHint ?? null };
+
 
     return { status: out.status, price: out.price, url, title: out.title };
   } catch (e) {
