@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   check:
-    runs-on: self-hosted      # <— belangrijk: jouw eigen runner
+    runs-on: self-hosted      # draait op jouw eigen Windows-pc
 
     steps:
       - name: Checkout repository
@@ -27,18 +27,17 @@ jobs:
       - name: Install Playwright (Chromium)
         run: npx playwright install chromium
 
-      # Snelle sanity check of de Discord-webhook
-     - name: Test Discord webhook (ping)
-  shell: pwsh
-  run: |
-    $body = @{ content = "✅ Self-hosted runner kan posten naar Discord (ping)" } | ConvertTo-Json
-    Invoke-RestMethod -Method Post -ContentType 'application/json' -Body $body -Uri $env:DISCORD_WEBHOOK_URL
-    Write-Host "Ping sent"
-  env:
-    DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      # ✔ Ping naar Discord via PowerShell (werkt op Windows)
+      - name: Test Discord webhook (ping)
+        shell: pwsh
+        run: |
+          $body = @{ content = "✅ Self-hosted runner kan posten naar Discord (ping)" } | ConvertTo-Json
+          Invoke-RestMethod -Method Post -ContentType 'application/json' -Body $body -Uri $env:DISCORD_WEBHOOK_URL
+          Write-Host "Ping sent"
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
-
-      # Draai je monitor één keer (leest watchlist.json)
+      # Draai de monitor één keer (checkt watchlist.json)
       - name: Run monitor once
         run: npm run check
         env:
@@ -47,15 +46,21 @@ jobs:
           CHECK_JITTER_SECONDS: 10
           TIMEOUT_MS: 20000
 
-      # Bewaar status voor volgende runs (alleen als gewijzigd)
+      # Commit state.json als er iets veranderde
       - name: Commit state changes
+        shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state.json
-          git diff --cached --quiet || (git commit -m "chore: update state [skip ci]" && git push)
+          if (-not (git diff --cached --quiet)) {
+            git commit -m "chore: update state [skip ci]"
+            git push
+          } else {
+            Write-Host "No state changes to commit"
+          }
 
-      # Downloadbare debug: HTML + screenshots van bezochte productpagina's
+      # Upload HTML + screenshots uit artifacts/ om te debuggen
       - name: Upload debug artifacts (html + screenshots)
         if: always()
         uses: actions/upload-artifact@v4
