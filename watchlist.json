@@ -1,41 +1,9 @@
 [
   {
     "id": "test-ps5",
-    "label": "PlayStation 5 Slim Disc Edition",
+    "label": "PlayStation 5 Slim",
     "ean": null,
     "url": "https://www.bol.com/nl/nl/p/playstation-5-disc-edition-slim/9300000166374057/",
-    "targetPrice": null,
-    "intervalMinutes": 30
-  },
-  {
-    "id": "test-airpods3",
-    "label": "Apple AirPods (3e gen) met MagSafe",
-    "ean": null,
-    "url": "https://www.bol.com/be/nl/p/apple-airpods-3-met-magsafe-oplaadcase/9300000060466139/",
-    "targetPrice": null,
-    "intervalMinutes": 30
-  },
-  {
-    "id": "test-lego-10698",
-    "label": "LEGO Classic 10698 – Grote Opbergdoos",
-    "ean": null,
-    "url": "https://www.bol.com/nl/nl/p/lego-classic-creatieve-grote-opbergdoos-10698/9200000038445809/",
-    "targetPrice": null,
-    "intervalMinutes": 30
-  },
-  {
-    "id": "test-hue-starterkit",
-    "label": "Philips Hue White & Color Ambiance Starterkit E27 (3x)",
-    "ean": null,
-    "url": "https://www.bol.com/nl/nl/p/philips-hue-starterspakket-e27-lichtbron-met-bridge-white-and-color-ambiance-3-x-9w-bluetooth/9300000072560821/",
-    "targetPrice": null,
-    "intervalMinutes": 30
-  },
-  {
-    "id": "test-monopoly",
-    "label": "Monopoly Classic – Bordspel",
-    "ean": null,
-    "url": "https://www.bol.com/nl/nl/p/monopoly-classic-bordspel/9300000129505825/",
     "targetPrice": null,
     "intervalMinutes": 30
   }
