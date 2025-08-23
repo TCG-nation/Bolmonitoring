@@ -60,82 +60,101 @@ export async function checkBolProduct({ url }) {
     }
   }
 
-  async function extract(p){
-    let availability = null, price = null, title = null;
+ async function extract(p){
+  let availability = null, price = null, title = null, stockHint = null;
 
-    // JSON-LD
-    const jsonLd = await p.$$eval('script[type="application/ld+json"]', ns => ns.map(n=>n.textContent).filter(Boolean));
-    for (const raw of jsonLd){
-      try{
-        const data = JSON.parse(raw), arr = Array.isArray(data)?data:[data];
-        for (const b of arr){
-          if (b['@type'] === 'Product'){
-            title = b.name || title;
-            const offer = b.offers || b.aggregateOffer || null;
-            if (offer){
-              availability = availability || offer.availability || (offer.offers && offer.offers[0]?.availability) || null;
-              const pval = offer.price ?? offer.lowPrice ?? offer.highPrice;
-              if (pval != null){
-                const num = Number(String(pval).replace(',','.'));
-                if (!Number.isNaN(num)) price = price ?? num;
-              }
+  // 1) JSON-LD
+  const jsonLd = await p.$$eval('script[type="application/ld+json"]', ns => ns.map(n=>n.textContent).filter(Boolean));
+  for (const raw of jsonLd){
+    try{
+      const data = JSON.parse(raw), arr = Array.isArray(data)?data:[data];
+      for (const b of arr){
+        if (b['@type'] === 'Product'){
+          title = b.name || title;
+          const offer = b.offers || b.aggregateOffer || null;
+          if (offer){
+            availability = availability || offer.availability || (offer.offers && offer.offers[0]?.availability) || null;
+            const pval = offer.price ?? offer.lowPrice ?? offer.highPrice;
+            if (pval != null){
+              const num = Number(String(pval).replace(',','.'));
+              if (!Number.isNaN(num)) price = price ?? num;
             }
-          }
-        }
-      } catch {}
-    }
-
-    // Next/React JSON
-    async function readJson(sel){ try { const t = await p.$eval(sel, el => el.textContent); return t?JSON.parse(t):null; } catch { return null; } }
-    let nextData = await readJson('#__NEXT_DATA__');
-    if (!nextData){
-      const big = await p.$$eval('script:not([type]),script[type="application/json"]', ns =>
-        ns.map(n=>n.textContent||'').filter(t=>t.trim().startsWith('{') && t.length>2000).sort((a,b)=>b.length-a.length).slice(0,2)
-      );
-      for (const s of big){ try { const j = JSON.parse(s); if (j) { nextData = j; break; } } catch {} }
-    }
-    function deepFind(obj){
-      const out={}; const st=[obj];
-      while(st.length){
-        const cur=st.pop();
-        if (cur && typeof cur==='object'){
-          for (const [k,v] of Object.entries(cur)){
-            const lk=k.toLowerCase();
-            if (['availability','instock','in_stock','available','availabilitystate','stockstate'].some(s=>lk.includes(s))){
-              out.avail = out.avail ?? (typeof v==='string'?v:(v?.toString?.()??null));
-            }
-            if (['price','sellingprice','amount','value','currentprice'].some(s=>lk.includes(s))){
-              const num=Number(String(v).replace(',','.')); if(!Number.isNaN(num)) out.price = out.price ?? num;
-            }
-            if (['title','name','productname'].some(s=>lk.includes(s))){
-              if(!out.title && typeof v==='string') out.title = v;
-            }
-            if (v && typeof v==='object') st.push(v);
           }
         }
       }
-      return out;
+    } catch {}
+  }
+
+  // 2) Next/React JSON (grote scriptblokken incl. __NEXT_DATA__)
+  async function readJson(sel){ try{ const t = await p.$eval(sel, el => el.textContent); return t?JSON.parse(t):null; } catch { return null; } }
+  let nextData = await readJson('#__NEXT_DATA__');
+  if (!nextData){
+    const big = await p.$$eval('script:not([type]),script[type="application/json"]', ns =>
+      ns.map(n=>n.textContent||'').filter(t=>t.trim().startsWith('{') && t.length>2000).sort((a,b)=>b.length-a.length).slice(0,2)
+    );
+    for (const s of big){ try { const j = JSON.parse(s); if (j) { nextData = j; break; } } catch {} }
+  }
+  function deepFind(obj){
+    const out={}; const st=[obj];
+    while(st.length){
+      const cur=st.pop();
+      if (cur && typeof cur==='object'){
+        for (const [k,v] of Object.entries(cur)){
+          const lk=k.toLowerCase();
+          if (['availability','instock','in_stock','available','availabilitystate','stockstate'].some(s=>lk.includes(s))){
+            out.avail = out.avail ?? (typeof v==='string'?v:(v?.toString?.()??null));
+          }
+          if (['price','sellingprice','amount','value','currentprice'].some(s=>lk.includes(s))){
+            const num=Number(String(v).replace(',','.')); if(!Number.isNaN(num)) out.price = out.price ?? num;
+          }
+          if (['title','name','productname'].some(s=>lk.includes(s))){
+            if(!out.title && typeof v==='string') out.title = v;
+          }
+          if (['stock','remaining','quantityavailable','inventory','qty','quantity'].some(s=>lk.includes(s))){
+            const n = Number(String(v).replace(/[^\d]/g,'')); if (!Number.isNaN(n) && !out.stockHint) out.stockHint = n;
+          }
+          if (v && typeof v==='object') st.push(v);
+        }
+      }
     }
-    if (nextData){
-      const f = deepFind(nextData);
-      availability = availability || f.avail || null;
-      price = price ?? f.price ?? null;
-      title = title || f.title || null;
-    }
+    return out;
+  }
+  if (nextData){
+    const f = deepFind(nextData);
+    availability = availability || f.avail || null;
+    price = price ?? f.price ?? null;
+    title = title || f.title || null;
+    stockHint = stockHint ?? f.stockHint ?? null;
+  }
 
-    if (!title) title = await p.title();
+  // 3) DOM fallback: prijs + “Nog maar X op voorraad”
+  if (price == null) {
+    try {
+      // algemene prijs selectors (bol wisselt dit soms)
+      const priceTxt = await p.$eval('[data-test="price"] , [data-test="buy-block"] [class*="price"] , [data-testid*="price"]', el => el.textContent);
+      const m = priceTxt && priceTxt.match(/(\d+[.,]\d{2})/);
+      if (m) price = Number(m[1].replace(',','.'));
+    } catch {}
+  }
+  try {
+    const bodyTxt = await p.evaluate(() => document.body.innerText);
+    const m = bodyTxt.match(/Nog maar\s+(\d+)\s+op voorraad/i) || bodyTxt.match(/Slechts\s+(\d+)\s+op voorraad/i);
+    if (m) stockHint = Number(m[1]);
+  } catch {}
 
-    // DOM fallback
-    const hasBuy = await p.$('text=/in winkelwagen/i');
-    const hasOut = await p.$('text=/tijdelijk uitverkocht|niet op voorraad/i');
+  if (!title) title = await p.title();
 
-    let status='UNKNOWN';
-    if (availability && /InStock$/i.test(availability)) status='IN_STOCK';
-    else if (typeof availability==='string' && /outofstock|niet/i.test(availability)) status='OUT_OF_STOCK';
-    else if (hasBuy) status='IN_STOCK';
-    else if (hasOut) status='OUT_OF_STOCK';
+  // 4) Status bepalen
+  const hasBuy = await p.$('text=/in winkelwagen/i');
+  const hasOut = await p.$('text=/tijdelijk uitverkocht|niet op voorraad/i');
 
-    return { status, price, title };
+  let status='UNKNOWN';
+  if (availability && /InStock$/i.test(availability)) status='IN_STOCK';
+  else if (typeof availability==='string' && /outofstock|niet/i.test(availability)) status='OUT_OF_STOCK';
+  else if (hasBuy) status='IN_STOCK';
+  else if (hasOut) status='OUT_OF_STOCK';
+
+  return { status, price, title, stockHint };
   }
 
   try {
