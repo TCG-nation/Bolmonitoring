@@ -1,4 +1,4 @@
-name: Bol Monitor
+name: Bol Monitor (Self‑Hosted)
 
 on:
   schedule:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted      # <— belangrijk: jouw eigen runner
 
     steps:
       - name: Checkout repository
@@ -24,20 +24,21 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Install Playwright (Chromium + deps)
-        run: npx playwright install --with-deps chromium
+      - name: Install Playwright (Chromium)
+        run: npx playwright install chromium
 
-      # Snelle sanity check of de Discord-webhook werkt
+      # Snelle sanity check of de Discord-webhook
       - name: Test Discord webhook (ping)
         run: |
-          curl -s -o /dev/null -w "%{http_code}\n" \
-            -H "Content-Type: application/json" \
-            -d '{"content":"✅ GitHub Actions kan posten naar Discord (ping)"}' \
-            "$DISCORD_WEBHOOK_URL"
+          curl -s -o /dev/null -w "%{http_code}\n" ^
+            -H "Content-Type: application/json" ^
+            -d "{\"content\":\"✅ Self-hosted runner kan posten naar Discord (ping)\"}" ^
+            "%DISCORD_WEBHOOK_URL%"
+        shell: cmd
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
-      # Draai je monitor één keer (run-once), leest watchlist.json
+      # Draai je monitor één keer (leest watchlist.json)
       - name: Run monitor once
         run: npm run check
         env:
@@ -49,13 +50,10 @@ jobs:
       # Bewaar status voor volgende runs (alleen als gewijzigd)
       - name: Commit state changes
         run: |
-          if [[ `git status --porcelain` ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add state.json
-            git commit -m "chore: update state [skip ci]"
-            git push
-          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || (git commit -m "chore: update state [skip ci]" && git push)
 
       # Downloadbare debug: HTML + screenshots van bezochte productpagina's
       - name: Upload debug artifacts (html + screenshots)
