@@ -3,10 +3,15 @@ import { cfg } from '../config.js';
 import { logger } from '../logger.js';
 
 /**
- * @returns {Promise<{status: 'IN_STOCK'|'OUT_OF_STOCK'|'UNKNOWN', price: number|null, url: string|null, title: string|null}>}
+ * Check bol-productpagina:
+ * - status: 'IN_STOCK' | 'OUT_OF_STOCK' | 'UNKNOWN'
+ * - price: nummer of null
+ * - title: producttitel (indien gevonden)
+ * - stockHint: schatting (direct uit pagina of via cart-probe)
+ * - url: aangeleverde url
  */
 export async function checkBolProduct({ url }) {
-  if (!url) return { status: 'UNKNOWN', price: null, url: null, title: null };
+  if (!url) return { status: 'UNKNOWN', price: null, url: null, title: null, stockHint: null };
 
   const browser = await chromium.launch({
     headless: true,
@@ -33,166 +38,259 @@ export async function checkBolProduct({ url }) {
     }
   });
 
-  // verberg webdriver flag iets
+  // Verberg 'webdriver' flag een beetje
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => false });
   });
 
   const page = await context.newPage();
-  page.setDefaultTimeout(Math.max(cfg.timeoutMs, 30000));
+  page.setDefaultTimeout(Math.max(cfg.timeoutMs || 20000, 30000));
 
-  async function acceptEverything(p){
-    const ids = ['#onetrust-accept-btn-handler','#onetrust-accept-btn-handler button'];
-    for (const sel of ids){
-      try { const b = await p.$(sel); if (b) { await b.click({timeout: 800}); } } catch {}
+  // --- Helpers --------------------------------------------------------------
+
+  async function acceptConsent(p) {
+    // OneTrust/consent-knoppen (pagina + iframes)
+    const idSelectors = [
+      '#onetrust-accept-btn-handler',
+      'button#onetrust-accept-btn-handler',
+      'button[aria-label*="Alles accepteren"]'
+    ];
+    const textSelectors = [
+      /Alles accepteren/i,
+      /Akkoord/i,
+      /Accepteren/i,
+      /Ik ga akkoord/i
+    ];
+
+    // direct op page
+    for (const sel of idSelectors) {
+      try { const b = await p.$(sel); if (b) await b.click({ timeout: 800 }); } catch {}
     }
-    const texts = ['Alles accepteren','Akkoord','Accepteren','Ik ga akkoord'];
-    for (const t of texts){
-      try { await p.getByText(new RegExp(t,'i')).click({timeout: 800}); } catch {}
+    for (const rx of textSelectors) {
+      try { await p.getByText(rx).click({ timeout: 800 }); } catch {}
     }
-    for (const f of p.frames()){
-      for (const sel of ids){
-        try { const b = await f.$(sel); if (b) { await b.click({timeout:800}); } } catch {}
+    // ook in iframes
+    for (const f of p.frames()) {
+      for (const sel of idSelectors) {
+        try { const b = await f.$(sel); if (b) await b.click({ timeout: 800 }); } catch {}
       }
-      for (const t of texts){
-        try { await f.getByText(new RegExp(t,'i')).click({timeout:800}); } catch {}
+      for (const rx of textSelectors) {
+        try { await f.getByText(rx).click({ timeout: 800 }); } catch {}
       }
     }
   }
 
- async function extract(p){
-  let availability = null, price = null, title = null, stockHint = null;
+  async function extract(p) {
+    let availability = null, price = null, title = null, stockHint = null;
 
-  // 1) JSON-LD
-  const jsonLd = await p.$$eval('script[type="application/ld+json"]', ns => ns.map(n=>n.textContent).filter(Boolean));
-  for (const raw of jsonLd){
-    try{
-      const data = JSON.parse(raw), arr = Array.isArray(data)?data:[data];
-      for (const b of arr){
-        if (b['@type'] === 'Product'){
-          title = b.name || title;
-          const offer = b.offers || b.aggregateOffer || null;
-          if (offer){
-            availability = availability || offer.availability || (offer.offers && offer.offers[0]?.availability) || null;
-            const pval = offer.price ?? offer.lowPrice ?? offer.highPrice;
-            if (pval != null){
-              const num = Number(String(pval).replace(',','.'));
-              if (!Number.isNaN(num)) price = price ?? num;
+    // 1) JSON-LD (meest stabiel als aanwezig)
+    const jsonLdBlocks = await p.$$eval('script[type="application/ld+json"]', ns =>
+      ns.map(n => n.textContent).filter(Boolean)
+    );
+    for (const raw of jsonLdBlocks) {
+      try {
+        const data = JSON.parse(raw);
+        const arr = Array.isArray(data) ? data : [data];
+        for (const b of arr) {
+          if (b['@type'] === 'Product') {
+            title = b.name || title;
+            const offer = b.offers || b.aggregateOffer || null;
+            if (offer) {
+              availability =
+                availability ||
+                offer.availability ||
+                (offer.offers && offer.offers[0]?.availability) ||
+                null;
+              const pval = offer.price ?? offer.lowPrice ?? offer.highPrice ?? null;
+              if (pval != null) {
+                const num = Number(String(pval).replace(',', '.'));
+                if (!Number.isNaN(num)) price = price ?? num;
+              }
             }
           }
         }
-      }
-    } catch {}
-  }
+      } catch {}
+    }
 
-  // 2) Next/React JSON (grote scriptblokken incl. __NEXT_DATA__)
-  async function readJson(sel){ try{ const t = await p.$eval(sel, el => el.textContent); return t?JSON.parse(t):null; } catch { return null; } }
-  let nextData = await readJson('#__NEXT_DATA__');
-  if (!nextData){
-    const big = await p.$$eval('script:not([type]),script[type="application/json"]', ns =>
-      ns.map(n=>n.textContent||'').filter(t=>t.trim().startsWith('{') && t.length>2000).sort((a,b)=>b.length-a.length).slice(0,2)
-    );
-    for (const s of big){ try { const j = JSON.parse(s); if (j) { nextData = j; break; } } catch {} }
-  }
-  function deepFind(obj){
-    const out={}; const st=[obj];
-    while(st.length){
-      const cur=st.pop();
-      if (cur && typeof cur==='object'){
-        for (const [k,v] of Object.entries(cur)){
-          const lk=k.toLowerCase();
-          if (['availability','instock','in_stock','available','availabilitystate','stockstate'].some(s=>lk.includes(s))){
-            out.avail = out.avail ?? (typeof v==='string'?v:(v?.toString?.()??null));
+    // 2) Next/React JSON (__NEXT_DATA__ of grote JSON scripts)
+    async function readJson(sel) {
+      try {
+        const t = await p.$eval(sel, el => el.textContent);
+        return t ? JSON.parse(t) : null;
+      } catch { return null; }
+    }
+    let nextData = await readJson('#__NEXT_DATA__');
+    if (!nextData) {
+      const big = await p.$$eval('script:not([type]),script[type="application/json"]', ns =>
+        ns.map(n => n.textContent || '')
+          .filter(t => t.trim().startsWith('{') && t.length > 2000)
+          .sort((a, b) => b.length - a.length)
+          .slice(0, 2)
+      );
+      for (const s of big) { try { const j = JSON.parse(s); if (j) { nextData = j; break; } } catch {} }
+    }
+
+    function deepFind(obj) {
+      const out = {};
+      const st = [obj];
+      while (st.length) {
+        const cur = st.pop();
+        if (cur && typeof cur === 'object') {
+          for (const [k, v] of Object.entries(cur)) {
+            const lk = k.toLowerCase();
+            if (['availability','instock','in_stock','available','availabilitystate','stockstate'].some(s => lk.includes(s))) {
+              out.avail = out.avail ?? (typeof v === 'string' ? v : (v?.toString?.() ?? null));
+            }
+            if (['price','sellingprice','amount','value','currentprice'].some(s => lk.includes(s))) {
+              const num = Number(String(v).replace(',', '.'));
+              if (!Number.isNaN(num)) out.price = out.price ?? num;
+            }
+            if (['title','name','productname'].some(s => lk.includes(s))) {
+              if (!out.title && typeof v === 'string') out.title = v;
+            }
+            if (['stock','remaining','quantityavailable','inventory','qty','quantity'].some(s => lk.includes(s))) {
+              const n = Number(String(v).replace(/[^\d]/g, ''));
+              if (!Number.isNaN(n) && !out.stockHint) out.stockHint = n;
+            }
+            if (v && typeof v === 'object') st.push(v);
           }
-          if (['price','sellingprice','amount','value','currentprice'].some(s=>lk.includes(s))){
-            const num=Number(String(v).replace(',','.')); if(!Number.isNaN(num)) out.price = out.price ?? num;
-          }
-          if (['title','name','productname'].some(s=>lk.includes(s))){
-            if(!out.title && typeof v==='string') out.title = v;
-          }
-          if (['stock','remaining','quantityavailable','inventory','qty','quantity'].some(s=>lk.includes(s))){
-            const n = Number(String(v).replace(/[^\d]/g,'')); if (!Number.isNaN(n) && !out.stockHint) out.stockHint = n;
-          }
-          if (v && typeof v==='object') st.push(v);
         }
       }
+      return out;
     }
-    return out;
-  }
-  if (nextData){
-    const f = deepFind(nextData);
-    availability = availability || f.avail || null;
-    price = price ?? f.price ?? null;
-    title = title || f.title || null;
-    stockHint = stockHint ?? f.stockHint ?? null;
-  }
 
-  // 3) DOM fallback: prijs + “Nog maar X op voorraad”
-  if (price == null) {
+    if (nextData) {
+      const f = deepFind(nextData);
+      availability = availability || f.avail || null;
+      price = price ?? f.price ?? null;
+      title = title || f.title || null;
+      stockHint = stockHint ?? f.stockHint ?? null;
+    }
+
+    // 3) DOM fallback: prijs + “Nog maar X op voorraad”
+    if (price == null) {
+      try {
+        const priceTxt = await p.$eval(
+          '[data-test="price"], [data-test="buy-block"] [class*="price"], [data-testid*="price"]',
+          el => el.textContent
+        );
+        const m = priceTxt && priceTxt.match(/(\d+[.,]\d{2})/);
+        if (m) price = Number(m[1].replace(',', '.'));
+      } catch {}
+    }
     try {
-      // algemene prijs selectors (bol wisselt dit soms)
-      const priceTxt = await p.$eval('[data-test="price"] , [data-test="buy-block"] [class*="price"] , [data-testid*="price"]', el => el.textContent);
-      const m = priceTxt && priceTxt.match(/(\d+[.,]\d{2})/);
-      if (m) price = Number(m[1].replace(',','.'));
+      const bodyTxt = await p.evaluate(() => document.body.innerText);
+      const m =
+        bodyTxt.match(/Nog maar\s+(\d+)\s+op voorraad/i) ||
+        bodyTxt.match(/Slechts\s+(\d+)\s+op voorraad/i);
+      if (m) stockHint = Number(m[1]);
     } catch {}
-  }
-  try {
-    const bodyTxt = await p.evaluate(() => document.body.innerText);
-    const m = bodyTxt.match(/Nog maar\s+(\d+)\s+op voorraad/i) || bodyTxt.match(/Slechts\s+(\d+)\s+op voorraad/i);
-    if (m) stockHint = Number(m[1]);
-  } catch {}
 
-  if (!title) title = await p.title();
+    if (!title) title = await p.title();
 
-  // 4) Status bepalen
-  const hasBuy = await p.$('text=/in winkelwagen/i');
-  const hasOut = await p.$('text=/tijdelijk uitverkocht|niet op voorraad/i');
+    // 4) Status bepalen (fallback op knoppen/teksten)
+    const hasBuy = await p.$('text=/in winkelwagen/i');
+    const hasOut = await p.$('text=/tijdelijk uitverkocht|niet op voorraad/i');
 
-  let status='UNKNOWN';
-  if (availability && /InStock$/i.test(availability)) status='IN_STOCK';
-  else if (typeof availability==='string' && /outofstock|niet/i.test(availability)) status='OUT_OF_STOCK';
-  else if (hasBuy) status='IN_STOCK';
-  else if (hasOut) status='OUT_OF_STOCK';
+    let status = 'UNKNOWN';
+    if (availability && /InStock$/i.test(availability)) status = 'IN_STOCK';
+    else if (typeof availability === 'string' && /outofstock|niet/i.test(availability)) status = 'OUT_OF_STOCK';
+    else if (hasBuy) status = 'IN_STOCK';
+    else if (hasOut) status = 'OUT_OF_STOCK';
 
-  return { status, price, title, stockHint };
+    return { status, price, title, stockHint };
   }
 
+  // Optioneel: “cart-probe” → ondergrens voorraad (minimaal bestelbaar/limiet)
+  async function estimateStockViaCart(p) {
+    try {
+      const btn = await p.$('text=/in winkelwagen/i');
+      if (!btn) return null;
+      await btn.click({ timeout: 3000 });
+
+      // naar winkelwagen
+      await p.waitForTimeout(800);
+      const toCart = await p.$('a:has-text("naar winkelwagen"), a:has-text("winkelwagen"), [href*="/winkelwagen"]');
+      if (toCart) await toCart.click({ timeout: 3000 });
+      else await p.goto('https://www.bol.com/nl/nl/winkelwagen/', { waitUntil: 'networkidle' });
+
+      await p.waitForTimeout(1200);
+
+      let qty = 1;
+      for (let i = 0; i < 20; i++) {
+        const plus = await p.$('button[aria-label*="+"], button[title*="meer"], [data-test*="increase"]');
+        if (!plus) break;
+        const disabled = await plus.getAttribute('disabled');
+        if (disabled !== null) break;
+        await plus.click({ timeout: 1500 });
+        qty++;
+        await p.waitForTimeout(300);
+
+        const msgTxt = await p.evaluate(() => document.body.innerText);
+        const m =
+          msgTxt.match(/maximaal\s+(\d+)\s+(?:per bestelling|per klant)/i) ||
+          msgTxt.match(/nog maar\s+(\d+)\s+(?:beschikbaar|op voorraad)/i);
+        if (m) return Number(m[1]);
+      }
+      return qty; // minimaal bestelbaar (ondergrens)
+    } catch {
+      return null;
+    }
+  }
+
+  // --- Hoofdlogica ----------------------------------------------------------
+
   try {
+    // 1e poging
     await page.goto(url, { waitUntil: 'networkidle' });
-    await page.waitForTimeout(1200);
-    await acceptEverything(page);
+    await page.waitForTimeout(1000);
+    await acceptConsent(page);
 
+    // indien nog niet op productpad, 2 extra pogingen
     let tries = 0;
-    while (!page.url().includes('/p/') && tries < 2){
+    while (!page.url().includes('/p/') && tries < 2) {
       tries++;
       await page.goto(url, { waitUntil: 'networkidle' });
       await page.waitForTimeout(800);
-      await acceptEverything(page);
+      await acceptConsent(page);
     }
 
+    // Triggert lazy content
     await page.mouse.wheel(0, 800);
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(300);
     await page.mouse.wheel(0, 800);
 
-    // debug assets (indien artifact stap aanwezig)
+    // Debug assets (werkt i.c.m. artifact-stap in workflow)
     try {
       const fs = await import('node:fs');
       fs.mkdirSync('artifacts', { recursive: true });
       const safeId = (url.match(/\/([0-9]{10,})\/?/)?.[1] || Date.now()).toString();
-      await page.screenshot({ path: `artifacts/${safeId}.png`, fullPage: true }).catch(()=>{});
+      await page.screenshot({ path: `artifacts/${safeId}.png`, fullPage: true }).catch(() => {});
       const html = await page.content();
       fs.writeFileSync(`artifacts/${safeId}.html`, html);
     } catch {}
 
-  const out = await extract(page);
-logger.info({ visited: page.url(), ...out }, 'Parsed bol product');
-return { status: out.status, price: out.price, url, title: out.title, stockHint: out.stockHint ?? null };
+    // Extractie
+    const out = await extract(page);
 
+    // Cart-probe alleen als we op voorraad zijn en nog géén hint hebben
+    let stockProbe = null;
+    if (out.status === 'IN_STOCK' && out.stockHint == null) {
+      stockProbe = await estimateStockViaCart(page);
+    }
 
-    return { status: out.status, price: out.price, url, title: out.title };
+    logger.info({ visited: page.url(), ...out, stockProbe }, 'Parsed bol product');
+
+    return {
+      status: out.status,
+      price: out.price,
+      url,
+      title: out.title,
+      stockHint: out.stockHint ?? stockProbe ?? null
+    };
   } catch (e) {
     logger.warn({ err: e?.message, finalUrl: page.url?.() }, 'Bol check failed');
-    return { status: 'UNKNOWN', price: null, url, title: null };
+    return { status: 'UNKNOWN', price: null, url, title: null, stockHint: null };
   } finally {
     await page.close();
     await context.close();
