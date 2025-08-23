@@ -2,19 +2,22 @@ name: Bol Monitor (Self-Hosted)
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
-  workflow_dispatch:
+    - cron: "*/15 * * * *"   # elke 15 minuten
+  workflow_dispatch:          # handmatig starten
 
 permissions:
   contents: write
 
 jobs:
   check:
-    runs-on: self-hosted
+    runs-on: self-hosted      # jouw Windows-pc
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -27,16 +30,22 @@ jobs:
       - name: Install Playwright (Chromium)
         run: npx playwright install chromium
 
-      - name: Test Discord webhook (ping)
-        shell: cmd
+      # Zorg dat artifacts/ altijd bestaat (voorkomt warnings)
+      - name: Ensure artifacts folder
+        shell: powershell
         run: |
-          curl -s -o NUL -w "%{http_code}\n" ^
-            -H "Content-Type: application/json" ^
-            -d "{\"content\":\"✅ Self-hosted runner kan posten naar Discord (ping)\"}" ^
-            "%DISCORD_WEBHOOK_URL%"
+          if (!(Test-Path -Path "artifacts")) { New-Item -ItemType Directory -Path "artifacts" | Out-Null }
+
+      # Discord-ping via Windows PowerShell (stabiel op self-hosted)
+      - name: Test Discord webhook (ping)
+        shell: powershell
+        run: |
+          $body = @{ content = "✅ Self-hosted runner kan posten naar Discord (ping)" } | ConvertTo-Json
+          Invoke-RestMethod -Method Post -ContentType 'application/json' -Body $body -Uri $env:DISCORD_WEBHOOK_URL
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
+      # Draai de monitor één keer
       - name: Run monitor once
         run: npm run check
         env:
@@ -45,17 +54,25 @@ jobs:
           CHECK_JITTER_SECONDS: 10
           TIMEOUT_MS: 20000
 
+      # Commit state.json (als die veranderde)
       - name: Commit state changes
-        shell: cmd
+        shell: powershell
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state.json
-          git diff --cached --quiet || (git commit -m "chore: update state [skip ci]" && git push)
+          if (-not (git diff --cached --quiet)) {
+            git commit -m "chore: update state [skip ci]"
+            git push
+          } else {
+            Write-Host "No state changes to commit"
+          }
 
+      # Upload HTML + screenshots (niet falen als er niets is)
       - name: Upload debug artifacts (html + screenshots)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bol-debug
           path: artifacts/**
+          if-no-files-found: ignore
